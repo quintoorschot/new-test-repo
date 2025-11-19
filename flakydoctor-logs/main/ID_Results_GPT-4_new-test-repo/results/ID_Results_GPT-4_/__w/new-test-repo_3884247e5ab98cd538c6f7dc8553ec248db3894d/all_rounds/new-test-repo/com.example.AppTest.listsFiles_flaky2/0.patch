@@ -1,0 +1,13 @@
+Test File Path: /__w/new-test-repo/new-test-repo/src/test/java/com/example/AppTest.java
+Original Test Method:
+   public void listsFiles_flaky2() throws IOException {
+    Path dir = Files.createTempDirectory("d-");
+    Files.createFile(dir.resolve("d.txt"));
+    Files.createFile(dir.resolve("e.txt"));
+    Files.createFile(dir.resolve("f.txt"));
+
+    // This is the flaky part: File.list() does not guarantee order.
+    List<String> names = Arrays.asList(dir.toFile().list());
+
+    assertEquals(Arrays.asList("d.txt", "e.txt", "f.txt"), names);
+  }
