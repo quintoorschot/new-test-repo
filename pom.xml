@@ -10,17 +10,18 @@
   <name>junit3-demo</name>
   <url>http://maven.apache.org</url>
 
-  <!-- Force a modern Java level so Maven can compile on current JDKs -->
+  <!-- Use a modern Java level so it compiles on current JDKs -->
   <properties>
     <maven.compiler.source>8</maven.compiler.source>
     <maven.compiler.target>8</maven.compiler.target>
   </properties>
 
   <dependencies>
+    <!-- JUnit 4 to support @Test and org.junit.Assert.* -->
     <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
-      <version>3.8.1</version>
+      <version>4.13.2</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
