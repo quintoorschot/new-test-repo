@@ -1,0 +1,179 @@
+name: FlakyDoctor
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  flakydoctor:
+    runs-on: ubuntu-latest
+    container: ghcr.io/quintoorschot/cicd-flakydoc-env:latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mark workspace safe for git
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
+          git config --global --add safe.directory '*' || true
+
+      - name: Create work branch
+        id: branch
+        run: |
+          set -euo pipefail
+          BRANCH="flakydoctor-patch-${{ github.run_id }}"
+          git checkout -b "$BRANCH"
+          echo "branch_name=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Generate tests.csv for FlakyDoctor
+        env:
+          ACTION_DIR: /__w/_actions/quintoorschot/CICD-FlakyDoctor/main
+          SRC_PATH: src/test/java
+        run: |
+          set -euo pipefail
+          python3 .github/workflow-scripts/generate_tests_csv.py
+
+      - name: Run FlakyDoctor
+        uses: quintoorschot/CICD-FlakyDoctor@main
+        with:
+          openai_api_key: ${{ secrets.OPENAI_API_KEY || secrets.OPEN_API_KEY }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || secrets.OPEN_API_KEY }}
+          OPEN_API_KEY:   ${{ secrets.OPENAI_API_KEY || secrets.OPEN_API_KEY }}
+
+      - name: Collect outputs
+        run: |
+          set -euo pipefail
+          ACTION_DIR="/__w/_actions/quintoorschot/CICD-FlakyDoctor/main"
+          OUT="$GITHUB_WORKSPACE/flakydoctor-output"
+          mkdir -p "$OUT"
+          find "$ACTION_DIR" -maxdepth 5 -name 'flakydoctor*.patch' -print -exec cp -v {} "$OUT/" \; || true
+          if [ -d "$ACTION_DIR/FlakyDoctor/good_patches" ]; then
+            cp -v "$ACTION_DIR"/FlakyDoctor/good_patches/* "$OUT/" 2>/dev/null || true
+          fi
+
+      - name: Apply .patch if present
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          PATCH_FILE=$(ls flakydoctor-output/*.patch 2>/dev/null | head -n 1 || true)
+          if [ -n "${PATCH_FILE:-}" ]; then
+            echo "Applying patch: $PATCH_FILE"
+            git apply --stat "$PATCH_FILE" || true
+            git apply --index --whitespace=fix "$PATCH_FILE" || {
+              echo "Retry with rejects"
+              git apply --reject --whitespace=fix "$PATCH_FILE" || true
+            }
+          else
+            echo "No .patch file to apply"
+          fi
+
+      - name: Apply Java good_patches (merge when multiple for same class)
+        run: |
+          set -euo pipefail
+          WS="$GITHUB_WORKSPACE"
+          SRC_DIR="$WS/src/test/java"
+          PATCH_DIR="$WS/flakydoctor-output"
+
+          shopt -s nullglob
+          declare -A GROUP
+          for f in "$PATCH_DIR"/good_patch.*.java; do
+            base="${f##*/}"
+            no_prefix="${base#good_patch.}"
+            class_path="$(echo "$no_prefix" | cut -d'#' -f1-3 | tr '#' '/')"
+            dest="$SRC_DIR/$class_path.java"
+            GROUP["$dest"]+="$f|"
+          done
+
+          for dest in "${!GROUP[@]}"; do
+            mkdir -p "$(dirname "$dest")"
+            IFS='|' read -r -a files <<<"${GROUP[$dest]}"
+            ancestor="$(mktemp)"
+            if [ -f "$dest" ]; then cp -f "$dest" "$ancestor"; else : >"$ancestor"; fi
+            cp -f "${files[0]}" "$dest"
+            for ((i=1; i<${#files[@]}; i++)); do
+              [ -n "${files[$i]}" ] || continue
+              git merge-file "$dest" "$ancestor" "${files[$i]}" || true
+            done
+            git add -f "$dest"
+            rm -f "$ancestor"
+          done
+
+      - name: Clean transient artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p .git/info
+          {
+            echo 'flakydoctor-output/'
+            echo 'CICD-FlakyDoctor'
+            echo '.nondex/'
+          } >> .git/info/exclude
+          rm -rf "$GITHUB_WORKSPACE/flakydoctor-output" || true
+          rm -f  "$GITHUB_WORKSPACE/CICD-FlakyDoctor" || true
+          git rm -f --cached flakydoctor-output 2>/dev/null || true
+          git rm -f --cached CICD-FlakyDoctor 2>/dev/null || true
+          git rm -r -f --cached .nondex 2>/dev/null || true
+
+      - name: Configure git identity
+        run: |
+          set -euo pipefail
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+
+      - name: Commit and push branch (if changes)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --staged --quiet; then
+            echo "No changes -> no push"
+            exit 0
+          fi
+          git commit -m "Apply FlakyDoctor patch for flaky tests"
+          git push origin "${{ steps.branch.outputs.branch_name }}"
+
+      - name: Open Pull Request via API
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+            const head  = '${{ steps.branch.outputs.branch_name }}';
+            const base  = 'main';
+
+            try {
+              const res = await github.rest.pulls.create({
+                owner: owner,
+                repo: repo,
+                title: 'FlakyDoctor auto-patch: Fix flaky test(s)',
+                head: head,
+                base: base,
+                body: 'This PR was automatically created by FlakyDoctor after detecting and patching flaky tests.',
+                maintainer_can_modify: true,
+                draft: false
+              });
+              core.notice(`PR #${res.data.number} created`);
+            } catch (e) {
+              const msg = String((e && (e.message || e.status)) || '');
+              if (e.status === 422 && msg.includes('A pull request already exists')) {
+                core.notice('PR already exists for this branch; skipping');
+              } else {
+                throw e;
+              }
+            }
