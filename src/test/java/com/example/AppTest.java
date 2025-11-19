@@ -11,7 +11,7 @@ import java.util.List;
 import org.junit.Test;
 
 public class AppTest {
-//
+
   @Test
   public void listsFiles_flaky() throws IOException {
     Path dir = Files.createTempDirectory("d-");
