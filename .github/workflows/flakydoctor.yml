@@ -55,6 +55,24 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || secrets.OPEN_API_KEY }}
           OPEN_API_KEY:   ${{ secrets.OPENAI_API_KEY || secrets.OPEN_API_KEY }}
 
+      - name: Save FlakyDoctor logs
+        if: always()
+        run: |
+          mkdir -p flakydoctor-logs
+          # Copy everything FlakyDoctor wrote inside the action directory
+          cp -r /__w/_actions/quintoorschot/CICD-FlakyDoctor/main flakydoctor-logs/ 2>/dev/null || true
+          # Collect the GitHub Action step logs if present
+          journalctl --no-pager > flakydoctor-logs/system_journal.txt 2>/dev/null || true
+        shell: bash
+
+      - name: Upload FlakyDoctor logs as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flakydoctor-logs
+          path: flakydoctor-logs
+
+
       - name: Collect outputs
         run: |
           set -euo pipefail
